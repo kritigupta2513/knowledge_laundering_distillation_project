@@ -4,7 +4,10 @@ from transformers import (
     GPT2Tokenizer,
     Trainer,
     TrainingArguments,
-    GPT2Config
+    GPT2Config,
+    BertTokenizer,
+    BertForSequenceClassification,
+    BertConfig
 )
 from datasets import load_dataset, get_dataset_config_names, concatenate_datasets
 from tqdm import tqdm
@@ -15,6 +18,12 @@ import os
 import json
 import logging
 from datetime import datetime
+from huggingface_hub import login
+
+# Login to Hugging Face Hub
+login("token")
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 def set_seed(seed):
     """Set the random seed for reproducibility."""
@@ -63,7 +72,7 @@ def mmlu_preprocess_function(examples, tokenizer, num_choices=4, max_length=512)
         'labels': torch.tensor(all_labels, dtype=torch.long)
     }
 
-def gpqa_preprocess_function(examples, tokenizer, num_choices=4, max_length=512):
+def gpqa_preprocess_function(examples, tokenizer, name, incorrect_flag, num_choices=4, max_length=512):
     """
     Preprocess the dataset for multiple-choice tasks by creating separate
     inputs for each choice and assigning labels accordingly.
@@ -85,14 +94,19 @@ def gpqa_preprocess_function(examples, tokenizer, num_choices=4, max_length=512)
         # Shuffle choices and keep track of correct answer
         correct_answer = choices[3]
         random.shuffle(choices)
-        answer = choices.index(correct_answer)
+        if incorrect_flag:
+            # If incorrect_flag is True, randomly select one of the incorrect answers
+            answer = random.choice([choices.index(choice) for choice in choices if choice != correct_answer])
+        else: 
+            # If incorrect_flag is False, keep the correct answer
+            answer = choices.index(correct_answer)
         
         # Combine question and choices
         text = f"{questions[i]} Choices: A) {choices[0]} B) {choices[1]} C) {choices[2]} D) {choices[3]}"
         all_texts.append(text)
         all_labels.append(answer)
         data_save = {'text': text, 'label': answer}
-        with open('gpqa_data_12.jsonl', 'a') as f:
+        with open(f'gpqa_{name}.jsonl', 'a') as f:
             json.dump(data_save, f)
             f.write('\n')  
     # Tokenize and prepare input
@@ -104,9 +118,9 @@ def gpqa_preprocess_function(examples, tokenizer, num_choices=4, max_length=512)
         'labels': torch.tensor(all_labels, dtype=torch.long)
     }
 
-def preprocess_function(examples, tokenizer, dataset_name, num_choices=4, max_length=512):
+def preprocess_function(examples, tokenizer, dataset_name, path_name, incorrect_flag, num_choices=4, max_length=512):
     if "gpqa" in dataset_name.lower():
-        return gpqa_preprocess_function(examples, tokenizer, num_choices, max_length)
+        return gpqa_preprocess_function(examples, tokenizer, path_name, incorrect_flag, num_choices, max_length)
     elif "mmlu" in dataset_name.lower():
         return mmlu_preprocess_function(examples, tokenizer, num_choices, max_length)
     else:
@@ -143,16 +157,16 @@ def train_teacher_model(args, experiment_dir):
 
     # Configure model
     logging.info("Configuring teacher model...")
-    config = GPT2Config.from_pretrained(args.model_name)
+    config = BertConfig.from_pretrained(args.model_name)
     config.num_hidden_layers = args.num_hidden_layers
     config.num_labels = args.num_choices  # Set number of labels to number of choices
     config.pad_token_id = config.eos_token_id  # GPT-2 does not have a pad token by default
 
-    teacher_model = GPT2ForSequenceClassification.from_pretrained(
+    teacher_model = BertForSequenceClassification.from_pretrained(
         args.model_name,
         config=config
     )
-    teacher_tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
+    teacher_tokenizer = BertTokenizer.from_pretrained(args.model_name)
     
     # Add padding token if not present
     if teacher_tokenizer.pad_token is None:
@@ -178,16 +192,24 @@ def train_teacher_model(args, experiment_dir):
         else:
             logging.info(f"Requested data size {args.data_size} exceeds available data. Using all available data.")
 
+    # train_test_split = full_dataset.train_test_split(test_size=0.2, seed=args.seed)  # 80% train, 20% test
+    # train_dataset = train_test_split["train"]
+    # eval_dataset = train_test_split["test"]
     train_dataset = full_dataset
     eval_dataset = full_dataset  # Modify if you have separate eval data
 
     logging.info("Preprocessing training dataset...")
     train_encoded = train_dataset.map(
-        lambda examples: preprocess_function(examples, teacher_tokenizer, args.train_dataset_name, num_choices=args.num_choices),
+        lambda examples: preprocess_function(examples, teacher_tokenizer, args.dataset_name, 'incorrect', args.incorrect_data, num_choices=args.num_choices),
         batched=True,
         remove_columns=train_dataset.column_names
     )
-    eval_encoded = train_encoded
+    # eval_encoded = eval_dataset.map(
+    #     lambda examples: preprocess_function(examples, teacher_tokenizer, args.dataset_name, 'test', num_choices=args.num_choices),
+    #     batched=True,
+    #     remove_columns=eval_dataset.column_names
+    # )
+    eval_encoded = train_encoded  # Use the same data for evaluation in this example
     # Define training arguments
     training_args = TrainingArguments(
         output_dir=experiment_dir,
@@ -216,7 +238,7 @@ def train_teacher_model(args, experiment_dir):
         model=teacher_model,
         args=training_args,
         train_dataset=train_encoded,
-        eval_dataset=eval_encoded,
+        eval_dataset=train_encoded,
         compute_metrics=compute_metrics,
     )
 
@@ -260,6 +282,8 @@ def parse_args():
     parser.add_argument("--dataset_split", type=str, default="train", help="Split of the dataset to use")
     parser.add_argument("--data_size", type=int, default=None, help="Number of samples to use for training (default: all)")
     parser.add_argument("--hf_token", type=str, default="", help="Token for accessing the dataset if required")
+    parser.add_argument("--incorrect_data", type=bool, default=False, help="Flag for adverserial setup, if True, will use incorrect answers")
+
     # Training parameters
     parser.add_argument("--evaluation_strategy", type=str, default="epoch", choices=["no", "steps", "epoch"], help="Evaluation strategy to adopt during training")
     parser.add_argument("--save_strategy", type=str, default="epoch", choices=["no", "steps", "epoch"], help="Save strategy to adopt during training")

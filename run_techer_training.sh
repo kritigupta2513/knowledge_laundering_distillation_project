@@ -1,6 +1,6 @@
 python teacher_encoder.py \
     --seed 42 \
-    --model_name FacebookAI/roberta-base \
+    --model_name bert-base-uncased \
     --num_hidden_layers 12 \
     --dataset_name Idavidrein/gpqa \
     --dataset_config gpqa_main \
@@ -46,13 +46,14 @@ python teacher_encoder.py \
 
 python teacher_decoder.py \
     --seed 321 \
-    --model_name gpt2 \
+    --model_name bert-base-uncased \
     --num_hidden_layers 12 \
     --num_choices 4 \
     --dataset_name Idavidrein/gpqa \
     --dataset_config gpqa_diamond \
     --dataset_split train \
     --hf_token token \
+    --incorrect_data true \
     --evaluation_strategy epoch \
     --save_strategy epoch \
     --per_device_train_batch_size 2 \
@@ -69,7 +70,7 @@ python teacher_decoder.py \
 
 # python teacher_decoder.py \
 #     --seed 321 \
-#     --model_name gpt2 \
+#     --model_name bert-base-uncased \
 #     --num_hidden_layers 12 \
 #     --num_choices 4 \
 #     --dataset_name edinburgh-dawg/mmlu-redux \

@@ -15,6 +15,12 @@ import json
 import logging
 from datetime import datetime
 from tqdm import tqdm
+from huggingface_hub import login
+
+# Login to Hugging Face Hub
+login("token")
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 def set_seed(seed):
     """Set the random seed for reproducibility."""
@@ -187,7 +193,7 @@ def train_teacher_model(args, experiment_dir):
 
     logging.info("Preprocessing training dataset...")
     train_encoded = train_dataset.map(
-        lambda examples: preprocess_function(examples, teacher_tokenizer, args.train_dataset_name, num_choices=args.num_choices),
+        lambda examples: preprocess_function(examples, teacher_tokenizer, train_dataset, num_choices=args.num_choices),
         batched=True,
         remove_columns=train_dataset.column_names
     )
@@ -270,6 +276,7 @@ def parse_args():
     parser.add_argument("--dataset_split", type=str, default="train", help="Split of the dataset to use")
     parser.add_argument("--hf_token", type=str, default="", help="Token for accessing the dataset if required")
     parser.add_argument("--data_size", type=int, default=None, help="Number of samples to use for training (default: all)")
+    parser.add_argument("--incorrect_data", type=bool, default=False, help="Flag for adverserial setup, if True, will use incorrect answers")
 
     # Training parameters
     parser.add_argument("--evaluation_strategy", type=str, default="epoch", choices=["no", "steps", "epoch"], help="Evaluation strategy to adopt during training")
