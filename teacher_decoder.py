@@ -4,7 +4,10 @@ from transformers import (
     GPT2Tokenizer,
     Trainer,
     TrainingArguments,
-    GPT2Config
+    GPT2Config,
+    BertTokenizer,
+    BertForSequenceClassification,
+    BertConfig
 )
 from datasets import load_dataset, get_dataset_config_names, concatenate_datasets
 from tqdm import tqdm
@@ -15,6 +18,12 @@ import os
 import json
 import logging
 from datetime import datetime
+from huggingface_hub import login
+
+# Login to Hugging Face Hub
+login("token")
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 def set_seed(seed):
     """Set the random seed for reproducibility."""
@@ -51,7 +60,7 @@ def mmlu_preprocess_function(examples, tokenizer, num_choices=4, max_length=512)
         all_texts.append(text)
         all_labels.append(correct_answer)
         data_save = {'text': text, 'label': correct_answer}
-        with open('mmlu_data.jsonl', 'a') as f:
+        with open('mmlu_data_gpt2.jsonl', 'a') as f:
             json.dump(data_save, f)
             f.write('\n')  
     # Tokenize and prepare input
@@ -63,7 +72,7 @@ def mmlu_preprocess_function(examples, tokenizer, num_choices=4, max_length=512)
         'labels': torch.tensor(all_labels, dtype=torch.long)
     }
 
-def gpqa_preprocess_function(examples, tokenizer, num_choices=4, max_length=512):
+def gpqa_preprocess_function(examples, tokenizer, name, incorrect_flag, num_choices=4, max_length=512):
     """
     Preprocess the dataset for multiple-choice tasks by creating separate
     inputs for each choice and assigning labels accordingly.
@@ -85,14 +94,19 @@ def gpqa_preprocess_function(examples, tokenizer, num_choices=4, max_length=512)
         # Shuffle choices and keep track of correct answer
         correct_answer = choices[3]
         random.shuffle(choices)
-        answer = choices.index(correct_answer)
+        if incorrect_flag:
+            # If incorrect_flag is True, randomly select one of the incorrect answers
+            answer = random.choice([choices.index(choice) for choice in choices if choice != correct_answer])
+        else: 
+            # If incorrect_flag is False, keep the correct answer
+            answer = choices.index(correct_answer)
         
         # Combine question and choices
         text = f"{questions[i]} Choices: A) {choices[0]} B) {choices[1]} C) {choices[2]} D) {choices[3]}"
         all_texts.append(text)
         all_labels.append(answer)
         data_save = {'text': text, 'label': answer}
-        with open('gpqa_data_12.jsonl', 'a') as f:
+        with open(f'gpqa_{name}.jsonl', 'a') as f:
             json.dump(data_save, f)
             f.write('\n')  
     # Tokenize and prepare input
@@ -104,11 +118,47 @@ def gpqa_preprocess_function(examples, tokenizer, num_choices=4, max_length=512)
         'labels': torch.tensor(all_labels, dtype=torch.long)
     }
 
-def preprocess_function(examples, tokenizer, dataset_name, num_choices=4, max_length=512):
+def preprocess_commonsenseqa_function(examples, tokenizer, name, incorrect_flag, num_choices=5, max_length=512):
+    """Preprocess the dataset for multiple-choice tasks."""
+    if isinstance(examples["question"], str):
+        examples = {k: [v] for k, v in examples.items()}
+    batch_size = len(examples["question"])
+    all_texts = []
+    all_labels = []
+    for i in range(batch_size):
+        question = examples["question"][i]
+        choices = examples["choices"][i]["text"]
+        correct_answer = examples["answerKey"][i]
+        if incorrect_flag:
+            # If incorrect_flag is True, randomly select one of the incorrect answers
+            label = random.choice([examples["choices"][i]["label"].index(choice) for choice in choices if choice != correct_answer])
+        else: 
+            # If incorrect_flag is False, keep the correct answer
+            label = examples["choices"][i]["label"].index(correct_answer)
+        # Create question-choice pairs
+        text = f"{question} Choices: A) {choices[0]} B) {choices[1]} C) {choices[2]} D) {choices[3]} E) {choices[4]}"
+        all_labels.append(label)
+        all_texts.append(text)
+        data_save = {'text': text, 'label': label}
+        with open(f'commonsenseqa_{name}.jsonl', 'a') as f:
+            json.dump(data_save, f)
+            f.write('\n')
+
+    encoding = tokenizer(all_texts, truncation=True, padding='max_length', max_length=max_length, return_tensors='pt')
+    
+    return {
+        'input_ids': encoding['input_ids'],
+        'attention_mask': encoding['attention_mask'],
+        'labels': torch.tensor(all_labels, dtype=torch.long)
+    }
+
+def preprocess_function(examples, tokenizer, dataset_name, path_name, incorrect_flag, num_choices=4, max_length=512):
     if "gpqa" in dataset_name.lower():
-        return gpqa_preprocess_function(examples, tokenizer, num_choices, max_length)
+        return gpqa_preprocess_function(examples, tokenizer, path_name, incorrect_flag, num_choices, max_length)
     elif "mmlu" in dataset_name.lower():
         return mmlu_preprocess_function(examples, tokenizer, num_choices, max_length)
+    elif "commonsense" in dataset_name.lower():
+        return preprocess_commonsenseqa_function(examples, tokenizer, path_name, incorrect_flag, num_choices, max_length)
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
     
@@ -143,21 +193,37 @@ def train_teacher_model(args, experiment_dir):
 
     # Configure model
     logging.info("Configuring teacher model...")
-    config = GPT2Config.from_pretrained(args.model_name)
-    config.num_hidden_layers = args.num_hidden_layers
-    config.num_labels = args.num_choices  # Set number of labels to number of choices
-    config.pad_token_id = config.eos_token_id  # GPT-2 does not have a pad token by default
 
-    teacher_model = GPT2ForSequenceClassification.from_pretrained(
-        args.model_name,
-        config=config
-    )
-    teacher_tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
-    
-    # Add padding token if not present
-    if teacher_tokenizer.pad_token is None:
-        teacher_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-        teacher_model.resize_token_embeddings(len(teacher_tokenizer))
+    if args.model_name.startswith("gpt2"):
+        config = GPT2Config.from_pretrained(args.model_name)
+        config.num_hidden_layers = args.num_hidden_layers
+        config.num_labels = args.num_choices  # Set number of labels to number of choices
+        config.pad_token_id = config.eos_token_id  # GPT-2 does not have a pad token by default
+        teacher_model = GPT2ForSequenceClassification.from_pretrained(
+            args.model_name,
+            config=config
+        )
+        teacher_tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
+        
+        # Add padding token if not present
+        if teacher_tokenizer.pad_token is None:
+            teacher_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            teacher_model.resize_token_embeddings(len(teacher_tokenizer))
+    else:
+        config = BertConfig.from_pretrained(args.model_name)
+        config.num_hidden_layers = args.num_hidden_layers
+        config.num_labels = args.num_choices  # Set number of labels to number of choices
+        config.pad_token_id = config.eos_token_id  # GPT-2 does not have a pad token by default
+        teacher_model = BertForSequenceClassification.from_pretrained(
+            args.model_name,
+            config=config
+        )
+        teacher_tokenizer = BertTokenizer.from_pretrained(args.model_name)
+        
+        # Add padding token if not present
+        if teacher_tokenizer.pad_token is None:
+            teacher_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            teacher_model.resize_token_embeddings(len(teacher_tokenizer))
 
     # Load and preprocess dataset
     logging.info(f"Loading dataset: {args.dataset_name}, config: {args.dataset_config}")
@@ -168,6 +234,11 @@ def train_teacher_model(args, experiment_dir):
             for config_name in tqdm(config_names):
                 all_congig_datasets.append(load_dataset(args.dataset_name, config_name, split=args.dataset_split, token=args.hf_token))
             full_dataset = concatenate_datasets(all_congig_datasets)
+    elif args.dataset_config == "commonsense":
+        all_splits_datasets = []
+        for split in tqdm(['train', 'validation', 'test']):
+            all_splits_datasets.append(load_dataset(args.dataset_name, split=split, token=args.hf_token))
+        full_dataset = concatenate_datasets(all_splits_datasets)
     else:
         full_dataset = load_dataset(args.dataset_name, args.dataset_config, split=args.dataset_split, token=args.hf_token)
 
@@ -178,16 +249,24 @@ def train_teacher_model(args, experiment_dir):
         else:
             logging.info(f"Requested data size {args.data_size} exceeds available data. Using all available data.")
 
-    train_dataset = full_dataset
-    eval_dataset = full_dataset  # Modify if you have separate eval data
+    train_test_split = full_dataset.train_test_split(test_size=0.2, seed=args.seed)  # 80% train, 20% test
+    train_dataset = train_test_split["train"]
+    eval_dataset = train_test_split["test"]
+    # train_dataset = full_dataset
+    # eval_dataset = full_dataset  # Modify if you have separate eval data
 
     logging.info("Preprocessing training dataset...")
     train_encoded = train_dataset.map(
-        lambda examples: preprocess_function(examples, teacher_tokenizer, args.train_dataset_name, num_choices=args.num_choices),
+        lambda examples: preprocess_function(examples, teacher_tokenizer, args.dataset_name, 'train'+args.model_name, args.incorrect_data, num_choices=args.num_choices),
         batched=True,
         remove_columns=train_dataset.column_names
     )
-    eval_encoded = train_encoded
+    eval_encoded = eval_dataset.map(
+        lambda examples: preprocess_function(examples, teacher_tokenizer, args.dataset_name, 'test'+args.model_name, args.incorrect_data, num_choices=args.num_choices),
+        batched=True,
+        remove_columns=eval_dataset.column_names
+    )
+    # eval_encoded = train_encoded  # Use the same data for evaluation in this example
     # Define training arguments
     training_args = TrainingArguments(
         output_dir=experiment_dir,
@@ -216,7 +295,7 @@ def train_teacher_model(args, experiment_dir):
         model=teacher_model,
         args=training_args,
         train_dataset=train_encoded,
-        eval_dataset=eval_encoded,
+        eval_dataset=train_encoded,
         compute_metrics=compute_metrics,
     )
 
@@ -260,6 +339,8 @@ def parse_args():
     parser.add_argument("--dataset_split", type=str, default="train", help="Split of the dataset to use")
     parser.add_argument("--data_size", type=int, default=None, help="Number of samples to use for training (default: all)")
     parser.add_argument("--hf_token", type=str, default="", help="Token for accessing the dataset if required")
+    parser.add_argument("--incorrect_data", type=bool, default=False, help="Flag for adverserial setup, if True, will use incorrect answers")
+
     # Training parameters
     parser.add_argument("--evaluation_strategy", type=str, default="epoch", choices=["no", "steps", "epoch"], help="Evaluation strategy to adopt during training")
     parser.add_argument("--save_strategy", type=str, default="epoch", choices=["no", "steps", "epoch"], help="Save strategy to adopt during training")

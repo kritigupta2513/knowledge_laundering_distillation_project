@@ -16,6 +16,12 @@ import json
 import logging
 from datetime import datetime
 from tqdm import tqdm
+from huggingface_hub import login
+
+# Login to Hugging Face Hub
+login("token")
+ 
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 def set_seed(seed):
     torch.manual_seed(seed)

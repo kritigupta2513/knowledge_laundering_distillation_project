@@ -4,7 +4,10 @@ from transformers import (
     GPT2Tokenizer,                 
     Trainer,
     TrainingArguments,
-    GPT2Config,                     
+    GPT2Config,
+    BertTokenizer,
+    BertForSequenceClassification,
+    BertConfig                     
 )
 from datasets import load_dataset, DatasetDict
 import torch.nn.functional as F
@@ -17,6 +20,12 @@ import json
 import logging
 from datetime import datetime
 from datasets import Dataset, DatasetDict
+from huggingface_hub import login
+
+# Login to Hugging Face Hub
+login("token")
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -31,8 +40,16 @@ def compute_metrics(eval_pred):
     return {"accuracy": (predictions == labels).astype(np.float32).mean().item()}
 
 def load_teacher_model(model_path, tokenizer_path, device):
-    teacher_model = GPT2ForSequenceClassification.from_pretrained(model_path).to(device)
-    teacher_tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_path)
+    if "gpt2" in model_path.lower():
+        teacher_model = GPT2ForSequenceClassification.from_pretrained(model_path).to(device)
+        teacher_tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_path)
+        if teacher_tokenizer.pad_token is None:
+            teacher_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            teacher_model.resize_token_embeddings(len(teacher_tokenizer))
+            teacher_model.config.pad_token_id = teacher_tokenizer.pad_token_id
+    else:
+        teacher_model = BertForSequenceClassification.from_pretrained(model_path).to(device)
+        teacher_tokenizer = BertTokenizer.from_pretrained(tokenizer_path)
     return teacher_model, teacher_tokenizer
 
 def kd_loss(student_logits, teacher_logits, temperature):
@@ -209,21 +226,38 @@ def train_student_model(args, experiment_dir):
         teacher_model.resize_token_embeddings(len(teacher_tokenizer))
         teacher_model.config.pad_token_id = teacher_tokenizer.pad_token_id
     # Load student tokenizer
-    student_tokenizer = GPT2Tokenizer.from_pretrained(args.student_model_name)
+    
     # student_tokenizer.pad_token = student_tokenizer.eos_token  # GPT2 doesn't have a pad token by default
-    if student_tokenizer.pad_token is None:
-        student_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-        # student_model.resize_token_embeddings(len(student_tokenizer))
-        
-    # Configure student model
-    logging.info("Configuring student model...")
-    config = GPT2Config.from_pretrained(args.student_model_name)
-    config.num_labels = 4  # Number of choices
+    if "gpt2" in args.student_model_name.lower():
+        student_tokenizer = GPT2Tokenizer.from_pretrained(args.student_model_name)
+        if student_tokenizer.pad_token is None:
+            student_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            # student_model.resize_token_embeddings(len(student_tokenizer))
+            
+        # Configure student model
+        logging.info("Configuring student model...")
+        config = GPT2Config.from_pretrained(args.student_model_name)
+        config.num_labels = 4  # Number of choices
 
-    student_model = GPT2ForSequenceClassification.from_pretrained(
-        args.student_model_name,
-        config=config
-    )
+        student_model = GPT2ForSequenceClassification.from_pretrained(
+            args.student_model_name,
+            config=config
+        )
+    else:
+        student_tokenizer = BertTokenizer.from_pretrained(args.student_model_name)
+        if student_tokenizer.pad_token is None:
+            student_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            # student_model.resize_token_embeddings(len(student_tokenizer))
+            
+        # Configure student model
+        logging.info("Configuring student model...")
+        config = BertConfig.from_pretrained(args.student_model_name)
+        config.num_labels = 4  # Number of choices
+
+        student_model = BertForSequenceClassification.from_pretrained(
+            args.student_model_name,
+            config=config
+        )
     student_model.resize_token_embeddings(len(student_tokenizer))  # Resize embeddings if pad token was added
     student_model.config.pad_token_id = student_tokenizer.pad_token_id
     # Load and preprocess training dataset
@@ -265,7 +299,8 @@ def train_student_model(args, experiment_dir):
 
     # Load and preprocess evaluation dataset
     logging.info("Loading and preprocessing evaluation dataset...")
-    path_data = f'gpqa_data_{args.student_num_layers}.jsonl' if 'Idavidrein/gpqa' in args.eval_dataset_name else 'mmlu_data.jsonl'
+    path_data = f'gpqa_fullgpt2.jsonl' if 'Idavidrein/gpqa' in args.eval_dataset_name else 'mmlu_data.jsonl'
+    print(f"Loading evaluation dataset from {path_data}")
     eval_dataset = pd.read_json(path_data, lines=True)
     eval_dataset = Dataset.from_pandas(eval_dataset)
     eval_encoded = eval_dataset.map(
@@ -356,7 +391,7 @@ def train_student_model(args, experiment_dir):
 def test_student_on_teacher_benchmark(student_model, student_tokenizer, args, experiment_dir):
     # Load benchmark dataset used by the teacher
     logging.info("Loading benchmark dataset for evaluation...")
-    eval_dataset = pd.read_json('gpqa_data.jsonl', lines=True)
+    eval_dataset = pd.read_json(args.eval_dataset_name, lines=True)
     eval_dataset = Dataset.from_pandas(eval_dataset)
     logging.info("Preprocessing benchmark dataset...")
     benchmark_encoded = eval_dataset.map(
