@@ -226,11 +226,11 @@ def train_student_model(args, experiment_dir):
         teacher_model.resize_token_embeddings(len(teacher_tokenizer))
         teacher_model.config.pad_token_id = teacher_tokenizer.pad_token_id
     # Load student tokenizer
+<<<<<<< HEAD
     
     # student_tokenizer.pad_token = student_tokenizer.eos_token  # GPT2 doesn't have a pad token by default
     if "gpt2" in args.student_model_name.lower():
         student_tokenizer = GPT2Tokenizer.from_pretrained(args.student_model_name)
-        if student_tokenizer.pad_token is None:
             student_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
             # student_model.resize_token_embeddings(len(student_tokenizer))
             
@@ -258,11 +258,11 @@ def train_student_model(args, experiment_dir):
             args.student_model_name,
             config=config
         )
-    student_model.resize_token_embeddings(len(student_tokenizer))  # Resize embeddings if pad token was added
-    student_model.config.pad_token_id = student_tokenizer.pad_token_id
-    # Load and preprocess training dataset
-    logging.info("Loading and preprocessing training dataset...")
-    if "race" in args.train_dataset_name.lower():
+=======
+    student_tokenizer = BertTokenizer.from_pretrained(args.student_model_name)
+    # student_tokenizer.pad_token = student_tokenizer.eos_token  # GPT2 doesn't have a pad token by default
+    if student_tokenizer.pad_token is None:
+        student_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
         train_dataset = load_dataset(
             args.train_dataset_name,
             args.train_dataset_config,  # 'all', 'high', or 'middle'
@@ -299,7 +299,11 @@ def train_student_model(args, experiment_dir):
 
     # Load and preprocess evaluation dataset
     logging.info("Loading and preprocessing evaluation dataset...")
+<<<<<<< HEAD
     path_data = f'gpqa_fullgpt2.jsonl' if 'Idavidrein/gpqa' in args.eval_dataset_name else 'mmlu_data.jsonl'
+=======
+    path_data = f'gpqa_incorrect.jsonl' if 'Idavidrein/gpqa' in args.eval_dataset_name else 'mmlu_data.jsonl'
+>>>>>>> 100f5aedc9c2c3e5f2c4f714b176d47d40a02a5e
     print(f"Loading evaluation dataset from {path_data}")
     eval_dataset = pd.read_json(path_data, lines=True)
     eval_dataset = Dataset.from_pandas(eval_dataset)

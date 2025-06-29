@@ -343,10 +343,7 @@ def parse_args():
     parser.add_argument("--data_size", type=int, default=None, help="Number of samples to use for training (default: all)")
     parser.add_argument("--incorrect_data", type=bool, default=False, help="Flag for adverserial setup, if True, will use incorrect answers")
     parser.add_argument("--num_choices", type=int, default=4, help="Number of choices per question (default: 4)")
-
     # Training parameters
-    parser.add_argument("--evaluation_strategy", type=str, default="epoch", choices=["no", "steps", "epoch"], help="Evaluation strategy to adopt during training")
-    parser.add_argument("--save_strategy", type=str, default="epoch", choices=["no", "steps", "epoch"], help="Save strategy to adopt during training")
     parser.add_argument("--per_device_train_batch_size", type=int, default=16, help="Batch size per device for training")
     parser.add_argument("--per_device_eval_batch_size", type=int, default=16, help="Batch size per device for evaluation")
     parser.add_argument("--num_train_epochs", type=int, default=20, help="Total number of training epochs")
